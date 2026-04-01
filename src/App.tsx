@@ -15,9 +15,11 @@ import {
   getBoundsFromTrees,
   getClusterCenter,
 } from "./lib/analysis";
+import { createBlossomLayer } from "./lib/blossomLayer";
 import { decodeCsvBuffer, parseTreeCsv } from "./lib/csv";
 import type { AnalysisResult, ClusterModel, Controls, TreeRecord } from "./types";
 
+const BLOSSOM_LAYER_ID = "blossom-petals";
 const DEFAULT_CONTROLS: Controls = {
   distance: 15,
   minClusterSize: 10,
@@ -74,9 +76,10 @@ export default function App() {
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+      style: "https://tiles.openfreemap.org/styles/positron",
       center: [126.978, 37.5665],
-      zoom: 11.2,
+      zoom: 15,
+      pitch: 50,
     });
 
     map.addControl(
@@ -108,6 +111,7 @@ export default function App() {
 
     map.on("load", () => {
       addSourcesAndLayers(map);
+      syncBlossomLayer(map, true);
       bindMapInteractions(map, popupRef);
       sourcesReadyRef.current = true;
       renderAnalysisOnMap(map, analysisRef.current);
@@ -854,4 +858,23 @@ function emptyFeatureCollection(): GeoJSON.FeatureCollection {
     type: "FeatureCollection",
     features: [],
   };
+}
+
+function syncBlossomLayer(map: maplibregl.Map, enabled: boolean) {
+  const hasLayer = Boolean(map.getLayer(BLOSSOM_LAYER_ID));
+
+  if (enabled && !hasLayer) {
+    map.addLayer(
+      createBlossomLayer({
+        id: BLOSSOM_LAYER_ID,
+        opacity: 0.68,
+        petalCount: 154,
+      }),
+    );
+    return;
+  }
+
+  if (!enabled && hasLayer) {
+    map.removeLayer(BLOSSOM_LAYER_ID);
+  }
 }
