@@ -72,6 +72,29 @@ export default function App() {
   }, [analysis]);
 
   useEffect(() => {
+    const applyViewportHeight = () => {
+      const nextHeight = window.visualViewport?.height ?? window.innerHeight;
+      document.documentElement.style.setProperty("--app-height", `${nextHeight}px`);
+      window.requestAnimationFrame(() => {
+        mapRef.current?.resize();
+      });
+    };
+
+    applyViewportHeight();
+    window.addEventListener("resize", applyViewportHeight);
+    window.addEventListener("orientationchange", applyViewportHeight);
+    window.visualViewport?.addEventListener("resize", applyViewportHeight);
+    window.visualViewport?.addEventListener("scroll", applyViewportHeight);
+
+    return () => {
+      window.removeEventListener("resize", applyViewportHeight);
+      window.removeEventListener("orientationchange", applyViewportHeight);
+      window.visualViewport?.removeEventListener("resize", applyViewportHeight);
+      window.visualViewport?.removeEventListener("scroll", applyViewportHeight);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
     const map = new maplibregl.Map({
