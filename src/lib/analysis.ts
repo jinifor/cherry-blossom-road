@@ -231,6 +231,7 @@ function buildPointFeatures(
             species: tree.species,
             height: valueOrEmpty(tree.height),
             trunk: valueOrEmpty(tree.trunk),
+            trunkValue: tree.trunk ?? 0,
             canopy: valueOrEmpty(tree.canopy),
             planted: tree.planted,
             clusterId: meta.clusterId,

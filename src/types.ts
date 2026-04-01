@@ -31,6 +31,7 @@ export interface PointFeatureProperties {
   species: string;
   height: string;
   trunk: string;
+  trunkValue: number;
   canopy: string;
   planted: string;
   clusterId: number;
