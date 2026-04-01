@@ -81,7 +81,8 @@ export default function App() {
 
     map.addControl(
       new maplibregl.NavigationControl({
-        showCompass: false,
+        showZoom: false,
+        showCompass: true,
         visualizePitch: false,
       }),
       "bottom-left",
@@ -362,10 +363,14 @@ export default function App() {
 
         <section className="hero card">
           <p className="eyebrow">Seoul Cherry Blossom Road Explorer</p>
-          <h1>서울 벚꽃길 군집 분석</h1>
+          <h1>여기 벚꽃길이었네?</h1>
           <p className="hero-copy">
-            CSV 자동 로드, 거리 기반 군집화, 군집 영역 생성, 추천 벚꽃길 탐색까지 한 번에 살펴볼 수 있도록
-            구성했습니다.
+            벚꽃 시즌만 되면 괜히 발걸음이 가벼워지죠. 평소엔 그냥 스쳐 지나가던 길도, 알고 보면 근사한 벚꽃길일지 몰라요.
+            지금 있는 동네에 숨은 벚꽃 명소가 있는지, 또 내 주변에서 가장 가깝고 분위기 좋은 곳은 어디인지 지금 바로 찾아보세요.
+          </p>
+          <p className="hero-footnote">
+            서울 공공데이터 포털의 &#39;서울시 가로수 위치정보&#39; 데이터를 기반으로 만들었어요.
+            유명 벚꽃 명소 외에 숨은 벚꽃길을 찾아보세요.
           </p>
         </section>
 
@@ -377,13 +382,12 @@ export default function App() {
             <span className={`status-dot is-${statusTone}`}></span>
             <p>{statusMessage}</p>
           </div>
-          <p className="helper">서울 공공데이터 포털의 '서울시 가로수 위치정보'데이터를 기반으로 합니다.</p>
         </section>
 
         <section className="card tab-shell">
           <div className="tab-list" role="tablist" aria-label="왼쪽 패널 탭">
             {[
-              { key: "controls", label: "분석조건" },
+              { key: "controls", label: "보기 설정" },
               { key: "highlights", label: "추천 벚꽃길" },
             ].map((tab) => (
               <button
@@ -406,12 +410,12 @@ export default function App() {
             {activePanelTab === "controls" && (
               <div className="tab-panel">
                 <div className="section-head">
-                  <h2>분석조건</h2>
+                  <h2>보기 설정</h2>
                 </div>
 
                 <label className="field">
                   <div className="field-row">
-                    <span className="field-label">거리 임계값</span>
+                    <span className="field-label">가까운 거리 기준</span>
                     <strong>{controls.distance}m</strong>
                   </div>
                   <input
@@ -426,14 +430,14 @@ export default function App() {
                   />
                   <div className="range-legend">
                     <span>5m</span>
-                    <span>Connected Components</span>
+                    <span>가까운 나무끼리 묶기</span>
                     <span>30m</span>
                   </div>
                 </label>
 
                 <div className="grid two">
                   <label className="field">
-                    <span className="field-label">최소 나무 수</span>
+                    <span className="field-label">최소 나무 개수</span>
                     <input
                       type="number"
                       min="1"
@@ -446,7 +450,7 @@ export default function App() {
                   </label>
 
                   <label className="field">
-                    <span className="field-label">구 필터</span>
+                    <span className="field-label">보고 싶은 구</span>
                     <select
                       className="select-compact"
                       value={controls.district}
@@ -464,7 +468,7 @@ export default function App() {
 
                 <div className="grid two">
                   <label className="field">
-                    <span className="field-label">영역 생성 방식</span>
+                    <span className="field-label">길 범위 표시</span>
                     <select
                       className="select-compact"
                       value={controls.geometryMode}
@@ -472,14 +476,14 @@ export default function App() {
                         updateControl("geometryMode", event.target.value as Controls["geometryMode"])
                       }
                     >
-                      <option value="concave">Concave Hull</option>
-                      <option value="convex">Convex Hull</option>
-                      <option value="buffer">Buffer + Dissolve</option>
+                      <option value="concave">길 따라 자연스럽게</option>
+                      <option value="convex">바깥선 기준으로</option>
+                      <option value="buffer">조금 넉넉하게</option>
                     </select>
                   </label>
 
                   <div className="field">
-                    <span className="field-label">시각화 모드</span>
+                    <span className="field-label">지도에서 보기</span>
                     <div className="segmented">
                       {[
                         { value: "all", label: "전체" },
@@ -504,7 +508,7 @@ export default function App() {
                 </div>
 
                 <button className="primary-button" type="button" onClick={resetControls}>
-                  기본 설정으로 되돌리기
+                  처음 설정으로 돌아가기
                 </button>
 
                 <section className="summary-section">
@@ -598,17 +602,20 @@ export default function App() {
       ></button>
 
       <main className="map-shell">
-        <button
-          className="mobile-menu-button"
-          type="button"
-          aria-label="메뉴 열기"
-          aria-expanded={isMobileMenuOpen}
-          onClick={() => setIsMobileMenuOpen(true)}
-        >
-          <span></span>
-          <span></span>
-          <span></span>
-        </button>
+        <div className="mobile-menu-bar">
+          <button
+            className="mobile-menu-button"
+            type="button"
+            aria-label="메뉴 열기"
+            aria-expanded={isMobileMenuOpen}
+            onClick={() => setIsMobileMenuOpen(true)}
+          >
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <div className="mobile-menu-title-chip">여기 벚꽃길이었네?</div>
+        </div>
         <div ref={mapContainerRef} id="map" aria-label="서울 벚나무 분석 지도"></div>
       </main>
     </div>
