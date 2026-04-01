@@ -550,6 +550,13 @@ input[type="range"] {
   line-height: 1.5;
 }
 
+.highlight-note {
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  font-size: 0.79rem;
+  line-height: 1.55;
+}
+
 .map-shell {
   position: relative;
   min-width: 0;

@@ -592,6 +592,11 @@ export default function App() {
                     ))
                   )}
                 </ol>
+                <p className="highlight-note">
+                  추천 점수 = 나무 수 × log10(밀도 + 10)
+                  <br />
+                  나무가 많고, 좁은 범위에 더 촘촘하게 모여 있을수록 높은 점수를 받아요.
+                </p>
               </div>
             )}
           </div>
