@@ -20,6 +20,7 @@ import { decodeCsvBuffer, parseTreeCsv } from "./lib/csv";
 import type { AnalysisResult, ClusterModel, Controls, TreeRecord } from "./types";
 
 const BLOSSOM_LAYER_ID = "blossom-petals";
+const BUILDING_EXTRUSION_LAYER_ID = "ofm-buildings-3d";
 const DEFAULT_CONTROLS: Controls = {
   distance: 15,
   minClusterSize: 10,
@@ -32,6 +33,8 @@ const DEFAULT_CONTROLS: Controls = {
 
 type StatusTone = "info" | "success" | "warning";
 type PanelTab = "controls" | "highlights";
+type TrackingMode = "off" | "starting" | "on";
+type OrientationMode = "off" | "on" | "unsupported" | "blocked";
 type SummaryItem = {
   id: string;
   label: string;
@@ -51,6 +54,9 @@ export default function App() {
   const [statusTone, setStatusTone] = useState<StatusTone>("info");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [openSummaryHelp, setOpenSummaryHelp] = useState<string | null>(null);
+  const [trackingMode, setTrackingMode] = useState<TrackingMode>("off");
+  const [orientationMode, setOrientationMode] = useState<OrientationMode>("off");
+  const [trackingError, setTrackingError] = useState<string | null>(null);
 
   const deferredControls = useDeferredValue(controls);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -58,10 +64,15 @@ export default function App() {
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const sourcesReadyRef = useRef(false);
   const analysisRef = useRef<AnalysisResult>(analysis);
-  const geolocationBufferTimeoutRef = useRef<number | null>(null);
-  const geolocateZoomRef = useRef<number | null>(null);
   const didInitialFitRef = useRef(false);
   const pendingDistrictFitRef = useRef(false);
+  const geolocationWatchIdRef = useRef<number | null>(null);
+  const latestTrackedPositionRef = useRef<GeolocationPosition | null>(null);
+  const hasTrackedPositionRef = useRef(false);
+  const orientationEventNameRef = useRef<"deviceorientation" | "deviceorientationabsolute" | null>(null);
+  const orientationListenerRef = useRef<((event: DeviceOrientationEvent) => void) | null>(null);
+  const trackingControlButtonRef = useRef<HTMLButtonElement | null>(null);
+  const handleTrackingToggleRef = useRef<() => Promise<void>>(async () => { });
 
   const districts = Array.from(new Set(trees.map((tree) => tree.district))).sort((a, b) =>
     a.localeCompare(b, "ko"),
@@ -70,6 +81,10 @@ export default function App() {
   useEffect(() => {
     analysisRef.current = analysis;
   }, [analysis]);
+
+  useEffect(() => {
+    handleTrackingToggleRef.current = handleTrackingToggle;
+  });
 
   useEffect(() => {
     const applyViewportHeight = () => {
@@ -97,6 +112,7 @@ export default function App() {
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
+    let trackingControlContainer: HTMLDivElement | null = null;
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
       style: "https://tiles.openfreemap.org/styles/positron",
@@ -113,24 +129,40 @@ export default function App() {
       }),
       "bottom-left",
     );
+    map.addControl(
+      {
+        onAdd() {
+          const container = document.createElement("div");
+          container.className = "maplibregl-ctrl maplibregl-ctrl-group";
+          container.addEventListener("contextmenu", preventDefaultContextMenu);
+          trackingControlContainer = container;
 
-    const geolocateControl = new maplibregl.GeolocateControl({
-      positionOptions: {
-        enableHighAccuracy: true,
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "maplibregl-ctrl-geolocate";
+
+          const icon = document.createElement("span");
+          icon.className = "maplibregl-ctrl-icon";
+          icon.setAttribute("aria-hidden", "true");
+
+          button.append(icon);
+          button.addEventListener("click", handleTrackingControlClick);
+          container.append(button);
+          trackingControlButtonRef.current = button;
+          syncTrackingControlButton(button);
+
+          return container;
+        },
+        onRemove() {
+          trackingControlButtonRef.current?.removeEventListener("click", handleTrackingControlClick);
+          trackingControlContainer?.removeEventListener("contextmenu", preventDefaultContextMenu);
+          trackingControlContainer?.remove();
+          trackingControlContainer = null;
+          trackingControlButtonRef.current = null;
+        },
       },
-      trackUserLocation: false,
-      showUserLocation: true,
-      showAccuracyCircle: false,
-    });
-    map.addControl(geolocateControl, "bottom-left");
-
-    const geolocateButton = map
-      .getContainer()
-      .querySelector<HTMLButtonElement>(".maplibregl-ctrl-geolocate");
-    const handleGeolocateClick = () => {
-      geolocateZoomRef.current = map.getZoom();
-    };
-    geolocateButton?.addEventListener("click", handleGeolocateClick);
+      "bottom-left",
+    );
 
     map.on("load", () => {
       addSourcesAndLayers(map);
@@ -138,56 +170,16 @@ export default function App() {
       bindMapInteractions(map, popupRef);
       sourcesReadyRef.current = true;
       renderAnalysisOnMap(map, analysisRef.current);
+      renderTrackedPosition(map, latestTrackedPositionRef.current);
       if (!didInitialFitRef.current && analysisRef.current.visibleTrees.length > 0) {
         fitAnalysisBounds(map, analysisRef.current);
         didInitialFitRef.current = true;
       }
     });
-
-    const handleGeolocate = (position: GeolocationPosition) => {
-      const preservedZoom = geolocateZoomRef.current ?? map.getZoom();
-      const center: [number, number] = [position.coords.longitude, position.coords.latitude];
-
-      window.setTimeout(() => {
-        map.easeTo({
-          center,
-          zoom: preservedZoom,
-          duration: 900,
-          essential: true,
-          easing: (t) => 1 - Math.pow(1 - t, 3),
-        });
-        geolocateZoomRef.current = null;
-      }, 0);
-
-      const buffer = turf.circle([position.coords.longitude, position.coords.latitude], 0.01, {
-        units: "kilometers",
-        steps: 48,
-      });
-
-      setSourceData(map, "geolocate-buffer", {
-        type: "FeatureCollection",
-        features: [buffer],
-      });
-
-      if (geolocationBufferTimeoutRef.current !== null) {
-        window.clearTimeout(geolocationBufferTimeoutRef.current);
-      }
-
-      geolocationBufferTimeoutRef.current = window.setTimeout(() => {
-        setSourceData(map, "geolocate-buffer", emptyFeatureCollection());
-        geolocationBufferTimeoutRef.current = null;
-      }, 5000);
-    };
-
-    geolocateControl.on("geolocate", handleGeolocate);
     mapRef.current = map;
 
     return () => {
-      geolocateControl.off("geolocate", handleGeolocate);
-      geolocateButton?.removeEventListener("click", handleGeolocateClick);
-      if (geolocationBufferTimeoutRef.current !== null) {
-        window.clearTimeout(geolocationBufferTimeoutRef.current);
-      }
+      stopTracking(false);
       popupRef.current?.remove();
       map.remove();
       mapRef.current = null;
@@ -280,6 +272,10 @@ export default function App() {
     }
   }, [analysis]);
 
+  useEffect(() => {
+    syncTrackingControlButton();
+  }, [trackingMode, orientationMode, trackingError]);
+
   function updateControl<K extends keyof Controls>(key: K, value: Controls[K]) {
     setOpenSummaryHelp(null);
     if (key === "district") {
@@ -294,6 +290,223 @@ export default function App() {
     setOpenSummaryHelp(null);
     startTransition(() => {
       setControls(DEFAULT_CONTROLS);
+    });
+  }
+
+  function handleTrackingControlClick() {
+    void handleTrackingToggleRef.current();
+  }
+
+  function preventDefaultContextMenu(event: MouseEvent) {
+    event.preventDefault();
+  }
+
+  async function handleTrackingToggle() {
+    if (trackingMode === "starting") return;
+
+    if (trackingMode === "on") {
+      stopTracking();
+      return;
+    }
+
+    await startTracking();
+  }
+
+  async function startTracking() {
+    if (typeof window === "undefined" || !("geolocation" in navigator)) {
+      setTrackingError("이 브라우저에서는 위치 추적을 지원하지 않습니다.");
+      setOrientationMode("unsupported");
+      return;
+    }
+
+    stopTracking(false);
+    setTrackingMode("starting");
+    setTrackingError(null);
+    hasTrackedPositionRef.current = false;
+
+    const nextOrientationMode = await enableOrientationTracking();
+    setOrientationMode(nextOrientationMode);
+
+    try {
+      geolocationWatchIdRef.current = navigator.geolocation.watchPosition(
+        (position) => {
+          latestTrackedPositionRef.current = position;
+          const map = mapRef.current;
+          const isFirstFix = !hasTrackedPositionRef.current;
+          hasTrackedPositionRef.current = true;
+
+          if (map) {
+            renderTrackedPosition(map, position);
+            focusTrackedPosition(map, position, isFirstFix);
+          }
+
+          setTrackingMode("on");
+        },
+        (error) => {
+          stopTracking(false, true);
+          setTrackingMode("off");
+          setOrientationMode("off");
+          setTrackingError(getGeolocationErrorMessage(error));
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 0,
+          timeout: 10000,
+        },
+      );
+    } catch {
+      stopTracking(false, true);
+      setTrackingMode("off");
+      setOrientationMode("off");
+      setTrackingError("위치 추적을 시작하지 못했습니다.");
+    }
+  }
+
+  function stopTracking(resetState = true, rotateNorth = resetState) {
+    if (geolocationWatchIdRef.current !== null && "geolocation" in navigator) {
+      navigator.geolocation.clearWatch(geolocationWatchIdRef.current);
+      geolocationWatchIdRef.current = null;
+    }
+
+    disableOrientationTracking();
+    latestTrackedPositionRef.current = null;
+    hasTrackedPositionRef.current = false;
+
+    const map = mapRef.current;
+    if (map) {
+      renderTrackedPosition(map, null);
+      if (rotateNorth && bearingDelta(map.getBearing(), 0) > 0.5) {
+        map.easeTo({
+          bearing: 0,
+          duration: 550,
+          essential: true,
+        });
+      }
+    }
+
+    if (resetState) {
+      setTrackingMode("off");
+      setOrientationMode("off");
+      setTrackingError(null);
+    }
+  }
+
+  function syncTrackingControlButton(button = trackingControlButtonRef.current) {
+    if (!button) return;
+
+    const isPressed = trackingMode === "starting" || trackingMode === "on";
+    const geolocationSupported = typeof window !== "undefined" && "geolocation" in navigator;
+    const label =
+      trackingMode === "starting"
+        ? "위치 추적 시작 중"
+        : trackingMode === "on"
+          ? orientationMode === "on"
+            ? "현재 위치 추적과 지도 회전 끄기"
+            : "현재 위치 추적 끄기"
+          : trackingError ?? "현재 위치 추적 켜기";
+
+    button.classList.toggle("maplibregl-ctrl-geolocate-active", isPressed);
+    button.classList.toggle("maplibregl-ctrl-geolocate-waiting", trackingMode === "starting");
+    button.disabled = !geolocationSupported;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", isPressed ? "true" : "false");
+    button.setAttribute("aria-busy", trackingMode === "starting" ? "true" : "false");
+  }
+
+  async function enableOrientationTracking(): Promise<OrientationMode> {
+    if (typeof window === "undefined" || typeof DeviceOrientationEvent === "undefined") {
+      return "unsupported";
+    }
+
+    const permission = await requestOrientationPermission();
+    if (permission === "unsupported" || permission === "blocked") {
+      return permission;
+    }
+
+    disableOrientationTracking();
+
+    const eventName =
+      "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
+    const handleOrientation = (event: DeviceOrientationEvent) => {
+      const nextBearing = getOrientationBearing(event);
+      if (nextBearing === null) return;
+
+      const map = mapRef.current;
+      if (!map) return;
+
+      if (bearingDelta(map.getBearing(), nextBearing) < 1.5) {
+        return;
+      }
+
+      map.setBearing(nextBearing);
+    };
+
+    window.addEventListener(eventName, handleOrientation, true);
+    orientationEventNameRef.current = eventName;
+    orientationListenerRef.current = handleOrientation;
+    return "on";
+  }
+
+  function disableOrientationTracking() {
+    if (
+      typeof window !== "undefined" &&
+      orientationEventNameRef.current &&
+      orientationListenerRef.current
+    ) {
+      window.removeEventListener(
+        orientationEventNameRef.current,
+        orientationListenerRef.current,
+        true,
+      );
+    }
+
+    orientationEventNameRef.current = null;
+    orientationListenerRef.current = null;
+  }
+
+  function focusTrackedPosition(map: maplibregl.Map, position: GeolocationPosition, isFirstFix: boolean) {
+    const center: [number, number] = [position.coords.longitude, position.coords.latitude];
+    const nextZoom = isFirstFix ? Math.max(map.getZoom(), 16) : map.getZoom();
+
+    map.easeTo({
+      center,
+      zoom: nextZoom,
+      duration: isFirstFix ? 900 : 550,
+      essential: true,
+      easing: (t) => 1 - Math.pow(1 - t, 3),
+    });
+  }
+
+  function renderTrackedPosition(map: maplibregl.Map, position: GeolocationPosition | null) {
+    if (!sourcesReadyRef.current) return;
+
+    if (!position) {
+      setSourceData(map, "geolocate-buffer", emptyFeatureCollection());
+      setSourceData(map, "user-location", emptyFeatureCollection());
+      return;
+    }
+
+    const center: [number, number] = [position.coords.longitude, position.coords.latitude];
+    const accuracyMeters = Math.max(position.coords.accuracy || 0, 8);
+    const accuracyCircle = turf.circle(center, accuracyMeters / 1000, {
+      units: "kilometers",
+      steps: 48,
+    });
+
+    setSourceData(map, "geolocate-buffer", {
+      type: "FeatureCollection",
+      features: [accuracyCircle],
+    });
+    setSourceData(map, "user-location", {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: center },
+          properties: {},
+        },
+      ],
     });
   }
 
@@ -655,12 +868,17 @@ export default function App() {
 }
 
 function addSourcesAndLayers(map: maplibregl.Map) {
+  addBuildingExtrusionLayer(map);
   map.addSource("trees", { type: "geojson", data: emptyAnalysis(DEFAULT_CONTROLS).pointFeatures });
   map.addSource("clusters", { type: "geojson", data: emptyAnalysis(DEFAULT_CONTROLS).clusterFeatures });
   map.addSource("highlights", { type: "geojson", data: emptyAnalysis(DEFAULT_CONTROLS).highlightFeatures });
   map.addSource("highlight-centers", {
     type: "geojson",
     data: emptyAnalysis(DEFAULT_CONTROLS).highlightCenters,
+  });
+  map.addSource("user-location", {
+    type: "geojson",
+    data: emptyFeatureCollection(),
   });
   map.addSource("geolocate-buffer", {
     type: "geojson",
@@ -747,6 +965,63 @@ function addSourcesAndLayers(map: maplibregl.Map) {
       "circle-stroke-width": 1.05,
     },
   });
+  map.addLayer({
+    id: "user-location-point",
+    type: "circle",
+    source: "user-location",
+    paint: {
+      "circle-radius": 7.5,
+      "circle-color": "#2f80ed",
+      "circle-opacity": 0.96,
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 2.2,
+    },
+  });
+}
+
+function addBuildingExtrusionLayer(map: maplibregl.Map) {
+  if (map.getLayer(BUILDING_EXTRUSION_LAYER_ID) || !map.getSource("openmaptiles")) {
+    return;
+  }
+
+  const firstSymbolLayerId = map
+    .getStyle()
+    .layers?.find((layer) => layer.type === "symbol")?.id;
+
+  map.addLayer(
+    {
+      id: BUILDING_EXTRUSION_LAYER_ID,
+      type: "fill-extrusion",
+      source: "openmaptiles",
+      "source-layer": "building",
+      minzoom: 14.5,
+      filter: ["all", ["has", "render_height"], ["!=", ["get", "hide_3d"], 1]],
+      paint: {
+        "fill-extrusion-color": "#d8d4cc",
+        "fill-extrusion-height": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          14.5,
+          0,
+          15.5,
+          ["coalesce", ["get", "render_height"], 0],
+        ],
+        "fill-extrusion-base": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          14.5,
+          0,
+          15.5,
+          ["coalesce", ["get", "render_min_height"], 0],
+        ],
+        "fill-extrusion-opacity": 0.86,
+        "fill-extrusion-vertical-gradient": true,
+      },
+    },
+    firstSymbolLayerId,
+  );
 }
 
 function bindMapInteractions(
@@ -851,6 +1126,68 @@ function renderClusterPopup(cluster: ClusterModel): string {
   return `<p class="popup-title">추천 벚꽃길 ${cluster.rank ?? cluster.clusterId}</p><p class="popup-body">${lines.join("<br />")}</p>`;
 }
 
+async function requestOrientationPermission(): Promise<Exclude<OrientationMode, "off" | "on"> | "ready"> {
+  if (typeof window === "undefined" || typeof DeviceOrientationEvent === "undefined") {
+    return "unsupported";
+  }
+
+  const orientationEvent = DeviceOrientationEvent as typeof DeviceOrientationEvent & {
+    requestPermission?: () => Promise<"granted" | "denied">;
+  };
+
+  if (typeof orientationEvent.requestPermission !== "function") {
+    return "ready";
+  }
+
+  try {
+    const result = await orientationEvent.requestPermission();
+    return result === "granted" ? "ready" : "blocked";
+  } catch {
+    return "blocked";
+  }
+}
+
+function getOrientationBearing(event: DeviceOrientationEvent): number | null {
+  const orientationEvent = event as DeviceOrientationEvent & {
+    webkitCompassHeading?: number;
+  };
+
+  if (
+    typeof orientationEvent.webkitCompassHeading === "number" &&
+    Number.isFinite(orientationEvent.webkitCompassHeading)
+  ) {
+    return normalizeBearing(orientationEvent.webkitCompassHeading);
+  }
+
+  if (typeof event.alpha === "number" && Number.isFinite(event.alpha)) {
+    return normalizeBearing(360 - event.alpha);
+  }
+
+  return null;
+}
+
+function normalizeBearing(value: number) {
+  return ((value % 360) + 360) % 360;
+}
+
+function bearingDelta(current: number, next: number) {
+  const diff = Math.abs(normalizeBearing(current) - normalizeBearing(next));
+  return Math.min(diff, 360 - diff);
+}
+
+function getGeolocationErrorMessage(error: GeolocationPositionError) {
+  switch (error.code) {
+    case error.PERMISSION_DENIED:
+      return "위치 권한이 거부되어 추적을 시작할 수 없습니다.";
+    case error.POSITION_UNAVAILABLE:
+      return "현재 위치를 확인할 수 없습니다. GPS 또는 네트워크 상태를 확인해 주세요.";
+    case error.TIMEOUT:
+      return "위치 확인 시간이 초과되었습니다. 다시 시도해 주세요.";
+    default:
+      return "위치 추적 중 오류가 발생했습니다.";
+  }
+}
+
 function formatInteger(value: number) {
   return Number(value || 0).toLocaleString("ko-KR");
 }
@@ -895,8 +1232,8 @@ function syncBlossomLayer(map: maplibregl.Map, enabled: boolean) {
     map.addLayer(
       createBlossomLayer({
         id: BLOSSOM_LAYER_ID,
-        opacity: 0.68,
-        petalCount: 154,
+        opacity: 0.8,
+        petalCount: 202,
       }),
     );
     return;
